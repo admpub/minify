@@ -27,10 +27,10 @@ import (
 	"github.com/tdewolff/minify/json"
 	"github.com/tdewolff/minify/svg"
 	"github.com/tdewolff/minify/xml"
+	"github.com/webx-top/com"
 )
 
 const Concurrency = 50
-const Version = "2.2-dev"
 
 var filetypeMime = map[string]string{
 	"css":  "text/css",
@@ -43,15 +43,14 @@ var filetypeMime = map[string]string{
 }
 
 var (
+	m         *min.M
+	recursive bool
 	hidden    bool
 	list      bool
-	m         *min.M
-	pattern   *regexp.Regexp
-	recursive bool
 	verbose   bool
-	version   bool
-	update    bool
 	watch     bool
+	update    bool
+	pattern   *regexp.Regexp
 )
 
 type task struct {
@@ -94,7 +93,6 @@ func main() {
 	flag.BoolVarP(&verbose, "verbose", "v", false, "Verbose")
 	flag.BoolVarP(&watch, "watch", "w", false, "Watch files and minify upon changes")
 	flag.BoolVarP(&update, "update", "u", false, "Update binary")
-	flag.BoolVarP(&version, "version", "", false, "Version")
 
 	flag.StringVar(&siteurl, "url", "", "URL of file to enable URL minification")
 	flag.IntVar(&cssMinifier.Decimals, "css-decimals", -1, "Number of decimals to preserve in numbers, -1 is all")
@@ -112,11 +110,6 @@ func main() {
 		Info = log.New(os.Stderr, "INFO: ", 0)
 	} else {
 		Info = log.New(ioutil.Discard, "INFO: ", 0)
-	}
-
-	if version {
-		fmt.Println("minify", Version)
-		return
 	}
 
 	if update {
@@ -158,10 +151,10 @@ func main() {
 	dirDst := false
 	if output != "" {
 		output = sanitizePath(output)
-		if output[len(output)-1] == '/' {
+		if output[len(output)-1] == filepath.Separator {
 			dirDst = true
 			if err := os.MkdirAll(output, 0777); err != nil {
-				Error.Fatalln(err)
+				Error.Fatalln(output+":", err)
 			}
 		}
 	}
@@ -188,11 +181,10 @@ func main() {
 	m.AddRegexp(regexp.MustCompile("[/+]xml$"), xmlMinifier)
 
 	if m.URL, err = url.Parse(siteurl); err != nil {
-		Error.Fatalln(err)
+		Error.Fatalln(siteurl+":", err)
 	}
 
 	start := time.Now()
-
 	var fails int32
 	if verbose || len(tasks) == 1 {
 		for _, t := range tasks {
@@ -289,7 +281,7 @@ func getMimetype(mimetype, filetype string, useStdin bool) string {
 		}
 	}
 	if mimetype == "" && useStdin {
-		Error.Fatalln("must specify mimetype or filetype for stdin")
+		Error.Fatalln("must specify mime or type for stdin")
 	}
 
 	if verbose {
@@ -303,13 +295,13 @@ func getMimetype(mimetype, filetype string, useStdin bool) string {
 }
 
 func sanitizePath(p string) string {
-	p = filepath.ToSlash(p)
-	isDir := p[len(p)-1] == '/'
-	p = path.Clean(p)
+	p = filepath.FromSlash(p)
+	isDir := p[len(p)-1] == filepath.Separator
+	p = filepath.Clean(p)
 	if isDir {
-		p += "/"
+		p += string(filepath.Separator)
 	} else if info, err := os.Stat(p); err == nil && info.Mode().IsDir() {
-		p += "/"
+		p += string(filepath.Separator)
 	}
 	return p
 }
@@ -342,6 +334,7 @@ func expandInputs(inputs []string, dirDst bool) ([]task, bool) {
 	tasks := []task{}
 	for _, input := range inputs {
 		input = sanitizePath(input)
+		com.Dump(input)
 		info, err := os.Stat(input)
 		if err != nil {
 			Error.Println(err)
@@ -427,7 +420,7 @@ func expandOutputs(output string, tasks *[]task) bool {
 	if verbose {
 		if output == "" {
 			Info.Println("minify to stdout")
-		} else if output[len(output)-1] != '/' {
+		} else if output[len(output)-1] != filepath.Separator {
 			Info.Println("minify to output file", output)
 		} else if output == "./" {
 			Info.Println("minify to current working directory")
@@ -453,12 +446,12 @@ func expandOutputs(output string, tasks *[]task) bool {
 }
 
 func getOutputFilename(output string, t task) (string, error) {
-	if len(output) > 0 && output[len(output)-1] == '/' {
+	if len(output) > 0 && output[len(output)-1] == filepath.Separator {
 		rel, err := filepath.Rel(t.srcDir, t.srcs[0])
 		if err != nil {
 			return "", err
 		}
-		return path.Clean(filepath.ToSlash(path.Join(output, rel))), nil
+		return filepath.Clean(filepath.FromSlash(filepath.Join(output, rel))), nil
 	}
 	return output, nil
 }
@@ -486,7 +479,7 @@ func openOutputFile(output string) (*os.File, bool) {
 	if output == "" {
 		w = os.Stdout
 	} else {
-		if err := os.MkdirAll(path.Dir(output), 0777); err != nil {
+		if err := os.MkdirAll(filepath.Dir(output), 0777); err != nil {
 			Error.Println(err)
 			return nil, false
 		}
@@ -496,7 +489,7 @@ func openOutputFile(output string) (*os.File, bool) {
 			return attempt < 5, err
 		})
 		if err != nil {
-			Error.Println(err)
+			Error.Println(output+":", err)
 			return nil, false
 		}
 	}
@@ -534,7 +527,7 @@ func minify(mimetype string, t task) bool {
 		dstName = "stdin"
 	} else {
 		// rename original when overwriting
-		for i, _ := range t.srcs {
+		for i := range t.srcs {
 			if t.srcs[i] == t.dst {
 				t.srcs[i] += ".bak"
 				err := try.Do(func(attempt int) (bool, error) {
@@ -617,7 +610,7 @@ func minify(mimetype string, t task) bool {
 	fw.Close()
 
 	// remove original that was renamed, when overwriting files
-	for i, _ := range t.srcs {
+	for i := range t.srcs {
 		if t.srcs[i] == t.dst+".bak" {
 			if err == nil {
 				if err = os.Remove(t.srcs[i]); err != nil {
